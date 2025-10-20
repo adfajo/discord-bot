@@ -244,6 +244,19 @@ class AnimePager(discord.ui.View):
     await interaction.response.edit_message(view=self)
     self.stop()
 
+@bot.command(name="watchlist")
+async def watchlist(ctx):
+    """Display the user's watchlist."""
+    if not WATCH_LIST:
+        await ctx.send("❌ Your watchlist is empty.")
+        return
+
+    watchlist_embed = discord.Embed(title="Your Watchlist", color=discord.Color.blue())
+    for item in WATCH_LIST:
+        watchlist_embed.add_field(name=item, value="\u200b", inline=False)
+
+    await ctx.send(embed=watchlist_embed)
+
 @bot.command(name="addwatch")
 async def add_watch(ctx, *, title: str):
   """Let the user choose among the top 5 AniList matches, with pagination, then add it.
