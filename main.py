@@ -35,6 +35,7 @@ NEW_EPISODE_TIMES = []
 
 # discord.py v2+ requires explicit intents
 intents = discord.Intents.default()
+intents.message_content = True  # Required for prefix commands like !addwatch
 # Enable additional intents only if needed, e.g., message content:
 # intents.message_content = True  # requires enabling in the bot portal as well
 
