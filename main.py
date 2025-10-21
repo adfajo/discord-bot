@@ -4,6 +4,8 @@ import requests
 import os
 from typing import Optional, Dict, Any, Tuple, List
 from dataclasses import dataclass
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 try:
   from dotenv import load_dotenv
 except ImportError:
@@ -38,6 +40,9 @@ intents = discord.Intents.default()
 intents.message_content = True  # Required for prefix commands like !addwatch
 # Enable additional intents only if needed, e.g., message content:
 # intents.message_content = True  # requires enabling in the bot portal as well
+
+announced_episodes = set()
+scheduler = AsyncIOScheduler()
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
@@ -177,6 +182,37 @@ def build_anime_embed(item: Dict[str, Any], index: int, total: int) -> discord.E
     embed.add_field(name="Next Airing", value=next_text.strip(), inline=False)
   return embed
 
+async def check_and_announce_episode(title: str, episode: int):
+    """Announce a specific episode at its scheduled time."""
+    channel = bot.get_channel(CHANNEL_ID)
+    if not channel:
+        print("⚠️ Channel not found — check CHANNEL_ID")
+        return
+    
+    unique_key = f"{title}-{episode}"
+    if unique_key not in announced_episodes:
+        announced_episodes.add(unique_key)
+        await channel.send(f"🎬 New episode alert! **{title}** - Episode {episode} is now airing!")
+
+def schedule_episode_from_watchlist(title: str, airing_at: int, episode: int):
+    """Schedule an announcement based on airing time to repeat weekly."""
+    dt = datetime.datetime.fromtimestamp(airing_at)
+    job_id = f"{title}-weekly"
+    
+    # Schedule to run every week at the same day and time
+    scheduler.add_job(
+        check_and_announce_episode,
+        trigger=CronTrigger(
+            day_of_week=dt.weekday(),  # 0=Monday, 6=Sunday
+            hour=dt.hour,
+            minute=dt.minute
+        ),
+        args=[title, episode],
+        id=job_id,
+        replace_existing=True
+    )
+    print(f"📅 Scheduled {title} for every {dt.strftime('%A')} at {dt.strftime('%H:%M')}")
+
 class AnimePager(discord.ui.View):
   def __init__(self, user_id: int, results: List[Dict[str, Any]]):
     super().__init__(timeout=60)
@@ -244,6 +280,10 @@ class AnimePager(discord.ui.View):
     await interaction.response.edit_message(view=self)
     self.stop()
 
+@bot.command(name="anus")
+async def anus(ctx):
+    await ctx.send("Hei, my name is George Biden. I am fat and have a big anus.")
+
 @bot.command(name="watchlist")
 async def watchlist(ctx):
     """Display the user's watchlist."""
@@ -278,7 +318,16 @@ async def add_watch(ctx, *, title: str):
 
   if view.selected is None:
     await ctx.send("❌ Selection cancelled or timed out.")
+    try:
+      await msg.delete()
+    except Exception:
+      pass
     return
+  
+  try:
+    await msg.delete()
+  except Exception:
+    pass
 
   item = view.selected
   t = item.get("title") or {}
@@ -293,19 +342,18 @@ async def add_watch(ctx, *, title: str):
     WATCH_LIST.append(chosen)
     added = True
 
-  # Persist next airing info if available
+  # Schedule based on next airing info if available
   nae = item.get("nextAiringEpisode") or {}
-  if nae.get("airingAt") is not None:
-    NEW_EPISODE_TIMES.append({
-      "title": display_title,
-      "next_airing_at": nae.get("airingAt"),
-      "next_episode": nae.get("episode"),
-    })
+  airing_at = nae.get("airingAt")
+  episode = nae.get("episode")
+  
+  if airing_at is not None and episode is not None:
+    schedule_episode_from_watchlist(display_title, airing_at, episode)
 
   if added:
     when_text = ""
-    if nae.get("airingAt") is not None:
-      when_text = format_airing_info(nae.get("airingAt"), nae.get("episode"))
+    if airing_at is not None:
+      when_text = format_airing_info(airing_at, episode)
     await ctx.send(f"✅ Added **{display_title}** to your watch list.{when_text}")
   else:
     await ctx.send(f"⚠️ **{display_title}** is already in your watch list.")
@@ -316,51 +364,8 @@ announced_episodes = set()
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as {bot.user}")
-    check_new_episodes.start()
-
-@tasks.loop(minutes=30)
-async def check_new_episodes():
-    query = '''
-    query {
-      Page(page: 1, perPage: 20) {
-        airingSchedules(sort: TIME_DESC) {
-          media {
-            id
-            title { romaji english }
-          }
-          episode
-          airingAt
-        }
-      }
-    }
-    '''
-    response = requests.post(ANILIST_URL, json={"query": query}).json()
-    now = datetime.datetime.now().timestamp()
-
-    for airing in response["data"]["Page"]["airingSchedules"]:
-        title_romaji = airing["media"]["title"].get("romaji") or ""
-        title_english = airing["media"]["title"].get("english") or ""
-        matches = any(
-            (title_english and watch.lower() in title_english.lower()) or
-            (title_romaji and watch.lower() in title_romaji.lower())
-            for watch in WATCH_LIST
-        )
-        if not matches:
-            continue  # skip if not in your watchlist
-
-        episode = airing["episode"]
-        airing_time = airing["airingAt"]
-        display_title = title_english or title_romaji
-        unique_key = f"{display_title}-{episode}"
-
-        # Check if it aired in the last hour and hasn’t been announced
-        if airing_time < now < airing_time + 3600 and unique_key not in announced_episodes:
-            announced_episodes.add(unique_key)
-            channel = bot.get_channel(CHANNEL_ID)
-            if channel:
-                await channel.send(f"🎬 New episode out! **{display_title}** - Episode {episode}")
-            else:
-                print("⚠️ Channel not found — check CHANNEL_ID")
+    if not scheduler.running:
+        scheduler.start()
 
 if __name__ == "__main__":
   bot.run(BOT_TOKEN)
